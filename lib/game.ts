@@ -48,11 +48,11 @@ const boardSize = 10;
 
 export async function loop(engine: MLCEngine) {
   let state: GameState = {
-    currentCommandRed: "Flank and then attack the enemy soldier.",
-    currentCommandBlue: "Finish off the wounded soldier.",
+    currentCommandRed: "Attack the enemy soldier.",
+    currentCommandBlue: "Attack the enemy soldier.",
     soldiers: {
       1: { id: 1, team: "red", x: 0, y: 0, health: 100, history: [] },
-      2: { id: 2, team: "red", x: 1, y: 0, health: 25, history: [] },
+      //2: { id: 2, team: "red", x: 1, y: 0, health: 25, history: [] },
       3: { id: 3, team: "blue", x: 5, y: 5, health: 100, history: [] },
     },
   };
@@ -93,13 +93,22 @@ function printGameState(state: GameState) {
   console.log(r);
 }
 
-function parseCoordinates(coords: string): { x: number; y: number } {
-  let [x, y] = coords
-    .replaceAll("[", "")
-    .replaceAll("]", "")
-    .split(",")
-    .map(Number);
-  return { x, y };
+function parseCoordinates(
+  coords: string,
+  relativeTo: Soldier
+): { x: number; y: number } {
+  switch (coords) {
+    case "left":
+      return { x: -1 + relativeTo.x, y: 0 + relativeTo.y };
+    case "right":
+      return { x: 1 + relativeTo.x, y: 0 + relativeTo.y };
+    case "up":
+      return { x: 0 + relativeTo.x, y: -1 + relativeTo.y };
+    case "down":
+      return { x: 0 + relativeTo.x, y: 1 + relativeTo.y };
+    default:
+      return { x: 0 + relativeTo.x, y: 0 + relativeTo.y };
+  }
 }
 
 function updateGameState(
@@ -144,7 +153,7 @@ async function makeRequestForSoldier(
 ): Promise<GameCommand> {
   updateSoldierHistory(soldierId, state);
   let schema = getFormatForSoldier(soldierId, state);
-  // console.log("messages: ", state.soldiers[soldierId].history);
+  console.log("messages: ", state.soldiers[soldierId].history);
   let response = JSON.parse(
     (
       await engine.chatCompletion({
@@ -157,19 +166,26 @@ async function makeRequestForSoldier(
     ).choices[0].message.content!
   ) as GameResponse;
   state.soldiers[soldierId].history.push({
-    role: "user",
+    role: "assistant",
     content: JSON.stringify(response),
   });
-  if (response.command.startsWith("moveto")) {
-    let coords = parseCoordinates(response.command.replace("moveto", ""));
+  console.log(response.command);
+  if (response.command.startsWith("move_")) {
+    let coords = parseCoordinates(
+      response.command.replaceAll("move_", ""),
+      state.soldiers[soldierId]
+    );
     return {
       action: "move",
       reason: response.reasoning,
       x: coords.x,
       y: coords.y,
     };
-  } else if (response.command.startsWith("attack")) {
-    let coords = parseCoordinates(response.command.replace("attack", ""));
+  } else if (response.command.startsWith("attack_")) {
+    let coords = parseCoordinates(
+      response.command.replaceAll("attack_", ""),
+      state.soldiers[soldierId]
+    );
     return {
       action: "move",
       reason: response.reasoning,
@@ -205,8 +221,12 @@ function updateSoldierHistory(soldierId: number, state: GameState) {
     This is a list of all soldiers:
     [${Object.values(state.soldiers)
       .map(
-        (s) =>
-          `{id:'${s.id}', team:'${s.team}', coords: [${s.x},${s.y}], health:'${s.health}'}`
+        (o) =>
+          `{id:'${o.id}', team:'${o.team}', pos relative to you: [${
+            s.x > o.x ? `${s.x - o.x}_left` : `${o.x - s.x}_right`
+          },${s.y > o.y ? `${s.y - o.y}_up` : `${o.y - s.y}_down`}], health:'${
+            o.health
+          }'}`
       )
       .join("\n")}]
       
@@ -230,51 +250,51 @@ function getFormatForSoldier(soldierId: number, state: GameState): any {
       (o) => o.x === s.x + 1 && o.y === s.y
     ) === undefined
   )
-    e.push(`moveto[${s.x + 1},${s.y}]`);
+    e.push(`move_right`);
   if (
     Object.values(state.soldiers).find(
       (o) => o.x === s.x - 1 && o.y === s.y
     ) === undefined
   )
-    e.push(`moveto[${s.x - 1},${s.y}]`);
+    e.push(`move_left`);
   if (
     Object.values(state.soldiers).find(
       (o) => o.x === s.x && o.y === s.y + 1
     ) === undefined
   )
-    e.push(`moveto[${s.x},${s.y + 1}]`);
+    e.push(`move_down`);
   if (
     Object.values(state.soldiers).find(
       (o) => o.x === s.x && o.y === s.y - 1
     ) === undefined
   )
-    e.push(`moveto[${s.x},${s.y - 1}]`);
+    e.push(`move_up`);
 
   if (
     Object.values(state.soldiers).find(
       (o) => o.x === s.x + 1 && o.y === s.y
     ) !== undefined
   )
-    e.push(`attack[${s.x + 1},${s.y}]`);
+    e.push(`attack_right`);
   if (
     Object.values(state.soldiers).find(
       (o) => o.x === s.x - 1 && o.y === s.y
     ) !== undefined
   )
-    e.push(`attack[${s.x - 1},${s.y}]`);
+    e.push(`attack_left`);
   if (
     Object.values(state.soldiers).find(
       (o) => o.x === s.x && o.y === s.y + 1
     ) !== undefined
   )
-    e.push(`attack[${s.x},${s.y + 1}]`);
+    e.push(`attack_down`);
   if (
     Object.values(state.soldiers).find(
       (o) => o.x === s.x && o.y === s.y - 1
     ) !== undefined
   )
-    e.push(`attack[${s.x},${s.y - 1}]`);
+    e.push(`attack_down`);
   format.properties.command.enum = e;
-  console.log("command options: ", e);
+  // console.log("command options: ", e);
   return format;
 }
