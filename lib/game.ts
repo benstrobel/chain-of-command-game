@@ -1,4 +1,9 @@
-import { MLCEngine, ResponseFormat } from "@mlc-ai/web-llm";
+import {
+  ChatCompletionMessageParam,
+  MLCEngine,
+  ResponseFormat,
+} from "@mlc-ai/web-llm";
+import { v4 as uuidv4 } from "uuid";
 
 interface Soldier {
   id: number;
@@ -6,18 +11,13 @@ interface Soldier {
   x: number;
   y: number;
   health: number;
+  history: ChatCompletionMessageParam[];
 }
 
 interface GameState {
   currentCommandRed: string;
   currentCommandBlue: string;
   soldiers: { [id: number]: Soldier };
-}
-
-interface OllamaResponse {
-  model: string;
-  created_at: string;
-  response: GameResponse;
 }
 
 interface GameResponse {
@@ -31,7 +31,7 @@ type GameCommand = (
   | { action: "nothing" }
 ) & { reason: string };
 
-const ollamaRequestFormatBase = {
+const jsonFormatBase = {
   type: "object",
   properties: {
     reasoning: {
@@ -51,9 +51,9 @@ export async function loop(engine: MLCEngine) {
     currentCommandRed: "Flank and then attack the enemy soldier.",
     currentCommandBlue: "Finish off the wounded soldier.",
     soldiers: {
-      1: { id: 1, team: "red", x: 0, y: 0, health: 100 },
-      2: { id: 2, team: "red", x: 1, y: 0, health: 25 },
-      3: { id: 3, team: "blue", x: 5, y: 5, health: 100 },
+      1: { id: 1, team: "red", x: 0, y: 0, health: 100, history: [] },
+      2: { id: 2, team: "red", x: 1, y: 0, health: 25, history: [] },
+      3: { id: 3, team: "blue", x: 5, y: 5, health: 100, history: [] },
     },
   };
 
@@ -142,15 +142,13 @@ async function makeRequestForSoldier(
   state: GameState,
   engine: MLCEngine
 ): Promise<GameCommand> {
-  let prompt = getPromptForSoldier(soldierId, state);
+  updateSoldierHistory(soldierId, state);
   let schema = getFormatForSoldier(soldierId, state);
+  // console.log("messages: ", state.soldiers[soldierId].history);
   let response = JSON.parse(
     (
       await engine.chatCompletion({
-        messages: [
-          { role: "system", content: prompt.system },
-          { role: "user", content: prompt.user },
-        ],
+        messages: state.soldiers[soldierId].history,
         response_format: {
           type: "json_object",
           schema: JSON.stringify(schema),
@@ -158,6 +156,10 @@ async function makeRequestForSoldier(
       })
     ).choices[0].message.content!
   ) as GameResponse;
+  state.soldiers[soldierId].history.push({
+    role: "user",
+    content: JSON.stringify(response),
+  });
   if (response.command.startsWith("moveto")) {
     let coords = parseCoordinates(response.command.replace("moveto", ""));
     return {
@@ -179,20 +181,27 @@ async function makeRequestForSoldier(
   }
 }
 
-function getPromptForSoldier(
-  soldierId: number,
-  state: GameState
-): { system: string; user: string } {
+function updateSoldierHistory(soldierId: number, state: GameState) {
   let s = state.soldiers[soldierId];
-  // You can only do one action for now, but you will be asked to do another action after all other soldiers have made their turn.
-  return {
-    system: `You are a soldier in a game.
+
+  if (s.history.length === 0) {
+    s.history.push({
+      role: "system",
+      content: `You are a soldier in a game.
     You can do one of the following actions per turn: move to an adjacent field, attack an adjacent field, do nothing.
     If the coordinate you want to move to, is blocked by another soldier, you cannot move there.
-    You can attack a field when its directly adjacent to you.
+    You can attack a field when its directly adjacent to you / when the difference between the coordinates is 1.
     To move toward a soldier, you should choose the move action that reduces the distance between your coordinates and the coordinates of the other soldier.
 
     You are soldier ${s.id}.
+    Always respond using JSON`,
+    });
+  }
+
+  s.history.push({
+    role: "tool",
+    tool_call_id: uuidv4().toString(),
+    content: `The following describes the current game state, disregard any previous game states:
     This is a list of all soldiers:
     [${Object.values(state.soldiers)
       .map(
@@ -200,15 +209,20 @@ function getPromptForSoldier(
           `{id:'${s.id}', team:'${s.team}', coords: [${s.x},${s.y}], health:'${s.health}'}`
       )
       .join("\n")}]
-    Respond using JSON
-    You will be now receiving your command for this turn from your commander:
-    `,
-    user: s.team === "red" ? state.currentCommandRed : state.currentCommandBlue,
-  };
+      
+      You will be now receiving your command for this turn from your commander:
+      `,
+  });
+
+  s.history.push({
+    role: "user",
+    content:
+      s.team === "red" ? state.currentCommandRed : state.currentCommandBlue,
+  });
 }
 
 function getFormatForSoldier(soldierId: number, state: GameState): any {
-  let format = structuredClone(ollamaRequestFormatBase);
+  let format = structuredClone(jsonFormatBase);
   let s = state.soldiers[soldierId];
   let e = ["nothing"];
   if (
@@ -261,27 +275,6 @@ function getFormatForSoldier(soldierId: number, state: GameState): any {
   )
     e.push(`attack[${s.x},${s.y - 1}]`);
   format.properties.command.enum = e;
+  console.log("command options: ", e);
   return format;
-}
-
-async function ollamaRequest(
-  model: string,
-  prompt: string,
-  format: any
-): Promise<GameResponse> {
-  return fetch("http://localhost:11434/api/generate", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      model: model,
-      prompt: prompt,
-      format: format,
-      stream: false,
-    }),
-  }).then(
-    async (response) =>
-      JSON.parse((await response.json()).response) as GameResponse
-  );
 }
